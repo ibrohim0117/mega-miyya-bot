@@ -56,11 +56,17 @@ async def start_new_level(message: types.Message, state: FSMContext):
     msg = await message.answer(f"🚀 **{level}-bosqich boshlandi!**\nDiqqat qiling...")
     await asyncio.sleep(1)
 
-    for num in sequence:
-        await msg.edit_text(f"Eslab qoling: \n\n#️⃣  **{num}**", parse_mode="Markdown")
+    for idx, num in enumerate(sequence):
+        try:
+            await msg.edit_text(f"Eslab qoling: \n\n#️⃣  **{num}**", parse_mode="Markdown")
+        except Exception:
+            pass
         await asyncio.sleep(2.0)
     
-    await msg.edit_text("🔢 Endi sonlarni to'g'ri tartibda tanlang!")
+    try:
+        await msg.edit_text("🔢 Endi sonlarni to'g'ri tartibda tanlang!")
+    except Exception:
+        pass
     
     await state.set_state(GameStates.choosing)
     await send_game_keyboard(message.chat.id, sequence)
