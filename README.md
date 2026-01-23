@@ -69,7 +69,6 @@ python main.py
 ### Admin uchun:
 
 - `/alluser` - Jami foydalanuvchilar sonini ko'rsatadi
-- `/alluserdocs` - Barcha foydalanuvchilar ma'lumotlarini PDF fayl sifatida yuboradi
 
 **Eslatma:** Admin buyruqlari faqat `.env` faylida `ADMIN_IDS` ro'yxatida bo'lgan foydalanuvchilar uchun ishlaydi.
 
