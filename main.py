@@ -2,6 +2,8 @@ import asyncio
 import random
 import logging
 import os
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -18,7 +20,30 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(",") if id.strip()]
 
-logging.basicConfig(level=logging.INFO)
+os.makedirs("logs", exist_ok=True)
+
+log_format = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+file_handler = RotatingFileHandler(
+    'logs/bot.log',
+    maxBytes=10*1024*1024,
+    backupCount=5,
+    encoding='utf-8'
+)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(log_format)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(log_format)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler]
+)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
