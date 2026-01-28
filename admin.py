@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 from datetime import datetime
 from io import BytesIO
 from aiogram import types, F
@@ -11,7 +13,7 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from database import get_user_count, get_all_users, get_user_voices, get_user_by_id
+from database import get_user_count, get_all_users, get_user_voices, get_user_by_id, DB_NAME
 import html
 
 ADMIN_IDS = []
@@ -114,6 +116,42 @@ def register_admin_handlers(dp, bot):
         except Exception as e:
             logging.error(f"PDF yaratishda xatolik: {e}")
             await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
+
+    @dp.message(Command("get_bot_db"))
+    async def cmd_get_bot_db(message: types.Message):
+        if not is_admin(message.from_user.id):
+            await message.answer("❌ Bu buyruq faqat admin uchun!")
+            return
+        
+        try:
+            if not os.path.exists(DB_NAME):
+                await message.answer("❌ Ma'lumotlar bazasi fayli topilmadi!")
+                return
+            
+            await message.answer("⏳ Ma'lumotlar bazasi yuklanmoqda...")
+            
+            backup_filename = f"users_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copy2(DB_NAME, backup_filename)
+            
+            with open(backup_filename, 'rb') as db_file:
+                await message.answer_document(
+                    document=types.BufferedInputFile(
+                        file=db_file.read(),
+                        filename=backup_filename
+                    ),
+                    caption=f"💾 Ma'lumotlar bazasi nusxasi\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            
+            os.remove(backup_filename)
+            
+        except Exception as e:
+            logging.error(f"DB yuborishda xatolik: {e}")
+            await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
+            if os.path.exists(backup_filename):
+                try:
+                    os.remove(backup_filename)
+                except:
+                    pass
 
     @dp.message(Command("get_data_voice"))
     async def cmd_get_data_voice(message: types.Message, state: FSMContext):
