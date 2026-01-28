@@ -13,7 +13,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 from database import init_db, save_user
 from admin import register_admin_handlers, set_admin_ids
+from aiogram.client.session.aiohttp import AiohttpSession
+
 from golos import register_voice_handlers
+
+PROXY_URL = 'http://proxy.server:3128'
+session = AiohttpSession(proxy=PROXY_URL)
 
 load_dotenv()
 
