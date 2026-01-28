@@ -13,6 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 from database import init_db, save_user
 from admin import register_admin_handlers, set_admin_ids
+from golos import register_voice_handlers
 
 load_dotenv()
 
@@ -144,6 +145,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
 
 register_admin_handlers(dp, bot)
+register_voice_handlers(dp)
 
 async def main():
     await init_db()
