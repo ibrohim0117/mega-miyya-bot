@@ -51,7 +51,7 @@ logging.basicConfig(
     handlers=[file_handler, console_handler]
 )
 
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
 set_admin_ids(ADMIN_IDS)
