@@ -1,14 +1,18 @@
 import logging
 from datetime import datetime
 from io import BytesIO
-from aiogram import types
+from aiogram import types, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.enums import ParseMode
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from database import get_user_count, get_all_users
+from database import get_user_count, get_all_users, get_user_voices, get_user_by_id
+import html
 
 ADMIN_IDS = []
 
@@ -18,6 +22,12 @@ def set_admin_ids(admin_ids: list):
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+def escape_html(text: str) -> str:
+    return html.escape(str(text)) if text else 'N/A'
+
+class AdminStates(StatesGroup):
+    waiting_for_user_id = State()
 
 async def generate_users_pdf():
     users = await get_all_users()
@@ -82,7 +92,7 @@ def register_admin_handlers(dp, bot):
             return
         
         count = await get_user_count()
-        await message.answer(f"📊 **Jami foydalanuvchilar soni:** {count}", parse_mode="Markdown")
+        await message.answer(f"📊 <b>Jami foydalanuvchilar soni:</b> {count}", parse_mode=ParseMode.HTML)
 
     @dp.message(Command("alluserdocs"))
     async def cmd_alluserdocs(message: types.Message):
@@ -104,3 +114,92 @@ def register_admin_handlers(dp, bot):
         except Exception as e:
             logging.error(f"PDF yaratishda xatolik: {e}")
             await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
+
+    @dp.message(Command("get_data_voice"))
+    async def cmd_get_data_voice(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            await message.answer("❌ Bu buyruq faqat admin uchun!")
+            return
+        
+        await state.set_state(AdminStates.waiting_for_user_id)
+        await message.answer(
+            "🔍 Foydalanuvchi ID sini yuboring:\n\n"
+            "Bekor qilish uchun /cancel buyrug'ini yuboring."
+        )
+
+    @dp.message(Command("cancel"), AdminStates.waiting_for_user_id)
+    async def cmd_cancel_admin(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+
+    @dp.message(AdminStates.waiting_for_user_id, F.text)
+    async def process_user_id(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        
+        input_text = message.text
+        
+        if input_text.startswith("/"):
+            return
+        
+        try:
+            target_user_id = int(input_text.strip())
+        except ValueError:
+            await message.answer("❌ Noto'g'ri format! Faqat raqam yuboring.")
+            return
+        
+        user = await get_user_by_id(target_user_id)
+        if not user:
+            await message.answer(f"❌ ID: {target_user_id} bo'yicha foydalanuvchi topilmadi!")
+            await state.clear()
+            return
+        
+        voices = await get_user_voices(target_user_id)
+        
+        username = escape_html(user[1])
+        first_name = escape_html(user[2])
+        
+        if not voices:
+            await message.answer(
+                f"📋 <b>Foydalanuvchi:</b> {first_name} (@{username})\n"
+                f"🆔 <b>ID:</b> {target_user_id}\n\n"
+                f"🔇 Bu foydalanuvchi hali ovoz yubormagan.",
+                parse_mode=ParseMode.HTML
+            )
+            await state.clear()
+            return
+        
+        await message.answer(
+            f"📋 <b>Foydalanuvchi:</b> {first_name} (@{username})\n"
+            f"🆔 <b>ID:</b> {target_user_id}\n"
+            f"🎙 <b>Jami ovozlar:</b> {len(voices)}\n\n"
+            f"⏳ Ovozlar yuklanmoqda...",
+            parse_mode=ParseMode.HTML
+        )
+        
+        for idx, voice in enumerate(voices, 1):
+            voice_id, voice_text, file_id, created_at = voice
+            
+            escaped_text = escape_html(voice_text[:200])
+            suffix = '...' if len(voice_text) > 200 else ''
+            
+            try:
+                await bot.send_voice(
+                    chat_id=message.chat.id,
+                    voice=file_id,
+                    caption=f"🔢 #{idx}\n📝 <b>Matn:</b> {escaped_text}{suffix}\n📅 <b>Sana:</b> {created_at}",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                await message.answer(
+                    f"🔢 #{idx}\n"
+                    f"📝 <b>Matn:</b> {escaped_text}{suffix}\n"
+                    f"📅 <b>Sana:</b> {created_at}\n"
+                    f"❌ Ovozni yuborishda xatolik: {escape_html(str(e))}",
+                    parse_mode=ParseMode.HTML
+                )
+        
+        await message.answer(f"✅ Jami {len(voices)} ta ovoz yuborildi.")
+        await state.clear()
