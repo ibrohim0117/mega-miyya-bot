@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import asyncio
 from datetime import datetime
 from io import BytesIO
 from aiogram import types, F
@@ -8,12 +9,14 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from database import get_user_count, get_all_users, get_user_voices, get_user_by_id, DB_NAME
+from database import get_user_count, get_all_users, get_user_voices, get_user_by_id, get_all_user_ids, DB_NAME
 import html
 
 ADMIN_IDS = []
@@ -30,6 +33,10 @@ def escape_html(text: str) -> str:
 
 class AdminStates(StatesGroup):
     waiting_for_user_id = State()
+    waiting_broadcast_type = State()
+    waiting_broadcast_text = State()
+    waiting_broadcast_photo = State()
+    waiting_broadcast_video = State()
 
 async def generate_users_pdf():
     users = await get_all_users()
@@ -152,6 +159,132 @@ def register_admin_handlers(dp, bot):
                     os.remove(backup_filename)
                 except:
                     pass
+
+    @dp.message(Command("send_message"))
+    async def cmd_send_message(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            await message.answer("❌ Bu buyruq faqat admin uchun!")
+            return
+
+        await state.clear()
+        await state.set_state(AdminStates.waiting_broadcast_type)
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text="📝 Text", callback_data="broadcast:text")
+        kb.button(text="🖼 Rasm + caption", callback_data="broadcast:photo")
+        kb.button(text="🎞 Video + caption", callback_data="broadcast:video")
+        kb.adjust(1)
+
+        await message.answer(
+            "Qaysi turdagi xabar yuborasiz?\n\nBekor qilish: /cancel",
+            reply_markup=kb.as_markup(),
+        )
+
+    @dp.callback_query(AdminStates.waiting_broadcast_type, F.data.startswith("broadcast:"))
+    async def cb_broadcast_type(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("❌ Admin emas", show_alert=True)
+            return
+
+        kind = callback.data.split(":", 1)[1]
+        await state.update_data(broadcast_kind=kind)
+
+        if kind == "text":
+            await state.set_state(AdminStates.waiting_broadcast_text)
+            await callback.message.answer("📝 Matn yuboring.\n\nBekor qilish: /cancel")
+        elif kind == "photo":
+            await state.set_state(AdminStates.waiting_broadcast_photo)
+            await callback.message.answer("🖼 Rasm yuboring (caption bo‘lsa ham bo‘ladi).\n\nBekor qilish: /cancel")
+        elif kind == "video":
+            await state.set_state(AdminStates.waiting_broadcast_video)
+            await callback.message.answer("🎞 Video yuboring (caption bo‘lsa ham bo‘ladi).\n\nBekor qilish: /cancel")
+        else:
+            await callback.message.answer("❌ Noma’lum tur.")
+            await state.clear()
+
+        try:
+            await callback.answer()
+        except Exception:
+            pass
+
+    @dp.message(Command("cancel"), AdminStates.waiting_broadcast_type, AdminStates.waiting_broadcast_text, AdminStates.waiting_broadcast_photo, AdminStates.waiting_broadcast_video)
+    async def cmd_cancel_broadcast(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+
+    async def _broadcast_send(kind: str, text: str | None, file_id: str | None, caption: str | None) -> tuple[int, int]:
+        user_ids = await get_all_user_ids()
+        ok = 0
+        fail = 0
+
+        for uid in user_ids:
+            try:
+                if kind == "text":
+                    await bot.send_message(uid, text or "")
+                elif kind == "photo":
+                    await bot.send_photo(uid, photo=file_id, caption=caption)
+                elif kind == "video":
+                    await bot.send_video(uid, video=file_id, caption=caption)
+                else:
+                    raise ValueError("Unknown broadcast kind")
+                ok += 1
+                await asyncio.sleep(0.05)
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                fail += 1
+            except (TelegramForbiddenError, TelegramBadRequest) as e:
+                logging.warning(f"Broadcast to {uid} failed: {e}")
+                fail += 1
+                await asyncio.sleep(0.02)
+            except Exception as e:
+                logging.exception(f"Broadcast unexpected error to {uid}: {e}")
+                fail += 1
+                await asyncio.sleep(0.02)
+
+        return ok, fail
+
+    @dp.message(AdminStates.waiting_broadcast_text, F.text)
+    async def handle_broadcast_text(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+
+        text = message.text
+        if text.startswith("/"):
+            return
+
+        await message.answer("⏳ Yuborilmoqda...")
+        ok, fail = await _broadcast_send(kind="text", text=text, file_id=None, caption=None)
+        await state.clear()
+        await message.answer(f"✅ Yuborildi: {ok}\n❌ Xato: {fail}")
+
+    @dp.message(AdminStates.waiting_broadcast_photo, F.photo)
+    async def handle_broadcast_photo(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        caption = message.caption or None
+
+        await message.answer("⏳ Yuborilmoqda...")
+        ok, fail = await _broadcast_send(kind="photo", text=None, file_id=file_id, caption=caption)
+        await state.clear()
+        await message.answer(f"✅ Yuborildi: {ok}\n❌ Xato: {fail}")
+
+    @dp.message(AdminStates.waiting_broadcast_video, F.video)
+    async def handle_broadcast_video(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+
+        file_id = message.video.file_id
+        caption = message.caption or None
+
+        await message.answer("⏳ Yuborilmoqda...")
+        ok, fail = await _broadcast_send(kind="video", text=None, file_id=file_id, caption=caption)
+        await state.clear()
+        await message.answer(f"✅ Yuborildi: {ok}\n❌ Xato: {fail}")
 
     @dp.message(Command("get_data_voice"))
     async def cmd_get_data_voice(message: types.Message, state: FSMContext):

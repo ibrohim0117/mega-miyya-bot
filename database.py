@@ -50,6 +50,12 @@ async def get_all_users():
         async with db.execute("SELECT user_id, username, first_name, last_name, created_at FROM users ORDER BY created_at") as cursor:
             return await cursor.fetchall()
 
+async def get_all_user_ids():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+
 async def get_user_by_id(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id, username, first_name, last_name, created_at FROM users WHERE user_id = ?", (user_id,)) as cursor:
