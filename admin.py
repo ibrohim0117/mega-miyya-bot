@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import asyncio
+import socket
 from datetime import datetime
 from io import BytesIO
 from aiogram import types, F
@@ -11,12 +12,24 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
+from aiogram.types import FSInputFile
+import aiohttp
+import edge_tts
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from database import get_user_count, get_all_users, get_user_voices, get_user_by_id, get_all_user_ids, DB_NAME
+from database import (
+    get_user_count,
+    get_all_users,
+    get_user_voices,
+    get_user_by_id,
+    get_all_user_ids,
+    get_last_voices,
+    update_voice_file_id,
+    DB_NAME,
+)
 import html
 
 ADMIN_IDS = []
@@ -30,6 +43,41 @@ def is_admin(user_id: int) -> bool:
 
 def escape_html(text: str) -> str:
     return html.escape(str(text)) if text else 'N/A'
+
+TTS_PROXY = os.getenv("TTS_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+TTS_FORCE_IPV4 = os.getenv("TTS_FORCE_IPV4", "1") == "1"
+TTS_CONNECT_TIMEOUT = int(os.getenv("TTS_CONNECT_TIMEOUT", "10"))
+TTS_RECEIVE_TIMEOUT = int(os.getenv("TTS_RECEIVE_TIMEOUT", "60"))
+
+async def _regen_voice_file(text: str, voice_id: int) -> str:
+    os.makedirs("voice_files", exist_ok=True)
+    file_path = os.path.join("voice_files", f"admin_regen_{voice_id}.mp3")
+
+    connector = aiohttp.TCPConnector(family=socket.AF_INET) if TTS_FORCE_IPV4 else None
+    try:
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice=os.getenv("TTS_VOICE", "uz-UZ-SardorNeural"),
+            connector=connector,
+            proxy=TTS_PROXY,
+            connect_timeout=TTS_CONNECT_TIMEOUT,
+            receive_timeout=TTS_RECEIVE_TIMEOUT,
+        )
+        await communicate.save(file_path)
+        return file_path
+    finally:
+        if connector is not None:
+            try:
+                await connector.close()
+            except Exception:
+                pass
+
+def _safe_unlink(path: str):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 class AdminStates(StatesGroup):
     waiting_for_user_id = State()
@@ -159,6 +207,78 @@ def register_admin_handlers(dp, bot):
                     os.remove(backup_filename)
                 except:
                     pass
+
+    @dp.message(Command("voice_last_100"))
+    async def cmd_voice_last_100(message: types.Message):
+        if not is_admin(message.from_user.id):
+            await message.answer("❌ Bu buyruq faqat admin uchun!")
+            return
+
+        rows = await get_last_voices(100)
+        if not rows:
+            await message.answer("🔇 Hali ovozlar yo'q.")
+            return
+
+        await message.answer(f"🎙 Oxirgi <b>{len(rows)}</b> ta voice yuborilmoqda...", parse_mode=ParseMode.HTML)
+
+        for idx, row in enumerate(rows, 1):
+            voice_id, user_id, username, text, file_id, created_at = row
+            uname = escape_html(username) if username else "N/A"
+            preview = (text or "")[:200]
+            suffix = "..." if text and len(text) > 200 else ""
+            cap = (
+                f"🔢 #{idx}\n"
+                f"👤 <b>User:</b> {user_id} (@{uname})\n"
+                f"📝 <b>Text:</b> {escape_html(preview)}{suffix}\n"
+                f"📅 <b>Sana:</b> {created_at}"
+            )
+            file_id = (file_id or "").strip()
+
+            try:
+                await bot.send_voice(
+                    chat_id=message.chat.id,
+                    voice=file_id,
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                )
+                await asyncio.sleep(0.05)
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+            except TelegramBadRequest as e:
+                msg = str(e).lower()
+                if "wrong file identifier" in msg:
+                    regen_path = None
+                    try:
+                        regen_path = await _regen_voice_file(text or "", voice_id)
+                        sent = await bot.send_voice(
+                            chat_id=message.chat.id,
+                            voice=FSInputFile(regen_path),
+                            caption=cap + "\n\n⚠️ <i>file_id yangilandi</i>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        if sent.voice:
+                            await update_voice_file_id(voice_id, sent.voice.file_id)
+                    except Exception as e2:
+                        logging.warning(f"voice_last_100 regen failed (voice_id={voice_id}): {e2}")
+                        await message.answer(
+                            f"❌ Voice yuborilmadi (voice_id={voice_id}).\n{escape_html(str(e))}",
+                            parse_mode=ParseMode.HTML,
+                        )
+                    finally:
+                        if regen_path:
+                            _safe_unlink(regen_path)
+                else:
+                    logging.warning(f"voice_last_100 send bad request (voice_id={voice_id}): {e}")
+                    await message.answer(
+                        f"❌ Voice yuborilmadi (voice_id={voice_id}).\n{escape_html(str(e))}",
+                        parse_mode=ParseMode.HTML,
+                    )
+            except Exception as e:
+                logging.warning(f"voice_last_100 send failed (voice_id={voice_id}): {e}")
+                await message.answer(
+                    f"❌ Voice yuborilmadi (voice_id={voice_id}).\n{escape_html(str(e))}",
+                    parse_mode=ParseMode.HTML,
+                )
 
     @dp.message(Command("send_message"))
     async def cmd_send_message(message: types.Message, state: FSMContext):
@@ -359,10 +479,44 @@ def register_admin_handlers(dp, bot):
             try:
                 await bot.send_voice(
                     chat_id=message.chat.id,
-                    voice=file_id,
+                    voice=(file_id or "").strip(),
                     caption=f"🔢 #{idx}\n📝 <b>Matn:</b> {escaped_text}{suffix}\n📅 <b>Sana:</b> {created_at}",
                     parse_mode=ParseMode.HTML
                 )
+            except TelegramBadRequest as e:
+                msg = str(e).lower()
+                if "wrong file identifier" in msg:
+                    regen_path = None
+                    try:
+                        regen_path = await _regen_voice_file(voice_text or "", voice_id)
+                        sent = await bot.send_voice(
+                            chat_id=message.chat.id,
+                            voice=FSInputFile(regen_path),
+                            caption=f"🔢 #{idx}\n📝 <b>Matn:</b> {escaped_text}{suffix}\n📅 <b>Sana:</b> {created_at}\n\n⚠️ <i>file_id yangilandi</i>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        if sent.voice:
+                            await update_voice_file_id(voice_id, sent.voice.file_id)
+                    except Exception as e2:
+                        logging.warning(f"get_data_voice regen failed (voice_id={voice_id}): {e2}")
+                        await message.answer(
+                            f"🔢 #{idx}\n"
+                            f"📝 <b>Matn:</b> {escaped_text}{suffix}\n"
+                            f"📅 <b>Sana:</b> {created_at}\n"
+                            f"❌ Ovozni yuborishda xatolik: {escape_html(str(e))}",
+                            parse_mode=ParseMode.HTML
+                        )
+                    finally:
+                        if regen_path:
+                            _safe_unlink(regen_path)
+                else:
+                    await message.answer(
+                        f"🔢 #{idx}\n"
+                        f"📝 <b>Matn:</b> {escaped_text}{suffix}\n"
+                        f"📅 <b>Sana:</b> {created_at}\n"
+                        f"❌ Ovozni yuborishda xatolik: {escape_html(str(e))}",
+                        parse_mode=ParseMode.HTML
+                    )
             except Exception as e:
                 await message.answer(
                     f"🔢 #{idx}\n"

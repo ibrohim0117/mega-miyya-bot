@@ -67,10 +67,21 @@ async def save_voice(user_id: int, text: str, file_id: str):
             await db.execute("""
                 INSERT INTO voices (user_id, text, file_id, created_at)
                 VALUES (?, ?, ?, ?)
-            """, (user_id, text, file_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            """, (user_id, text, (file_id or "").strip(), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             await db.commit()
     except Exception as e:
         logging.error(f"Ovozni saqlashda xatolik: {e}")
+
+async def update_voice_file_id(voice_id: int, file_id: str):
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "UPDATE voices SET file_id = ? WHERE id = ?",
+                ((file_id or "").strip(), voice_id),
+            )
+            await db.commit()
+    except Exception as e:
+        logging.error(f"Voice file_id yangilashda xatolik: {e}")
 
 async def get_user_voices(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -88,6 +99,17 @@ async def get_all_voices():
             LEFT JOIN users u ON v.user_id = u.user_id
             ORDER BY v.created_at DESC
         """) as cursor:
+            return await cursor.fetchall()
+
+async def get_last_voices(limit: int = 100):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT v.id, v.user_id, u.username, v.text, v.file_id, v.created_at 
+            FROM voices v
+            LEFT JOIN users u ON v.user_id = u.user_id
+            ORDER BY v.created_at DESC
+            LIMIT ?
+        """, (limit,)) as cursor:
             return await cursor.fetchall()
 
 async def get_voice_count():
