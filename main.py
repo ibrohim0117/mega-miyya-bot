@@ -17,8 +17,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 from golos import register_voice_handlers
 
-# PROXY_URL = 'http://proxy.server:3128'
-# session = AiohttpSession(proxy=PROXY_URL)
+PROXY_URL = 'http://proxy.server:3128'
+session = AiohttpSession(proxy=PROXY_URL)
 
 load_dotenv()
 
@@ -51,8 +51,8 @@ logging.basicConfig(
     handlers=[file_handler, console_handler]
 )
 
-# bot = Bot(token=TOKEN, session=session)
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, session=session)
+# bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 set_admin_ids(ADMIN_IDS)
