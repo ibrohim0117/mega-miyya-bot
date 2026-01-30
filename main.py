@@ -17,8 +17,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 from golos import register_voice_handlers
 
-PROXY_URL = 'http://proxy.server:3128'
-session = AiohttpSession(proxy=PROXY_URL)
+# PROXY_URL = 'http://proxy.server:3128'
+# session = AiohttpSession(proxy=PROXY_URL)
 
 load_dotenv()
 
@@ -51,7 +51,8 @@ logging.basicConfig(
     handlers=[file_handler, console_handler]
 )
 
-bot = Bot(token=TOKEN, session=session)
+# bot = Bot(token=TOKEN, session=session)
+bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 set_admin_ids(ADMIN_IDS)
@@ -123,11 +124,33 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
     selected = int(callback.data.split("_")[1])
     data = await state.get_data()
     
-    level = data['level']
-    sequence = data['sequence']
-    user_answers = data['user_answers']
+    level = data.get("level")
+    sequence = data.get("sequence")
+    user_answers = data.get("user_answers")
+
+    if level is None or not sequence or user_answers is None:
+        try:
+            await callback.answer("Sessiya tugagan. Qayta boshlash: /start", show_alert=True)
+        except Exception:
+            pass
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        return
     
     current_step = len(user_answers)
+    if current_step >= len(sequence):
+        try:
+            await callback.answer("Bu o'yin allaqachon yakunlangan. /start", show_alert=True)
+        except Exception:
+            pass
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await state.clear()
+        return
     
     if selected == sequence[current_step]:
         user_answers.append(selected)
