@@ -1,5 +1,8 @@
 import os
 import logging
+import asyncio
+import socket
+import aiohttp
 import edge_tts
 from aiogram import types, F
 from aiogram.filters import Command
@@ -10,6 +13,13 @@ from database import save_voice
 
 VOICE_DIR = "voice_files"
 VOICE_NAME = "uz-UZ-SardorNeural"
+
+TTS_PROXY = os.getenv("TTS_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+TTS_FORCE_IPV4 = os.getenv("TTS_FORCE_IPV4", "1") == "1"
+TTS_CONNECT_TIMEOUT = int(os.getenv("TTS_CONNECT_TIMEOUT", "10"))
+TTS_RECEIVE_TIMEOUT = int(os.getenv("TTS_RECEIVE_TIMEOUT", "60"))
+TTS_RETRIES = max(1, int(os.getenv("TTS_RETRIES", "3")))
+TTS_RETRY_DELAY = float(os.getenv("TTS_RETRY_DELAY", "1.5"))
 
 os.makedirs(VOICE_DIR, exist_ok=True)
 
@@ -76,8 +86,36 @@ async def text_to_speech(text: str, user_id: int) -> str:
         text = cyrillic_to_latin(text)
     
     file_path = os.path.join(VOICE_DIR, f"voice_{user_id}.mp3")
-    communicate = edge_tts.Communicate(text=text, voice=VOICE_NAME)
-    await communicate.save(file_path)
+    connector = aiohttp.TCPConnector(family=socket.AF_INET) if TTS_FORCE_IPV4 else None
+    try:
+        last_err: Exception | None = None
+        for attempt in range(1, TTS_RETRIES + 1):
+            try:
+                communicate = edge_tts.Communicate(
+                    text=text,
+                    voice=VOICE_NAME,
+                    connector=connector,
+                    proxy=TTS_PROXY,
+                    connect_timeout=TTS_CONNECT_TIMEOUT,
+                    receive_timeout=TTS_RECEIVE_TIMEOUT,
+                )
+                await communicate.save(file_path)
+                last_err = None
+                break
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                last_err = e
+                if attempt < TTS_RETRIES:
+                    await asyncio.sleep(TTS_RETRY_DELAY * attempt)
+                else:
+                    raise
+        if last_err is not None:
+            raise last_err
+    finally:
+        if connector is not None:
+            try:
+                await connector.close()
+            except Exception:
+                pass
     return file_path
 
 def cleanup_voice_file(file_path: str):
@@ -137,6 +175,7 @@ def register_voice_handlers(dp):
         except Exception as e:
             logging.error(f"Text to voice xatolik: {e}")
             await processing_msg.edit_text(f"❌ Xatolik yuz berdi: {str(e)}")
+            await state.clear()
             
         finally:
             if file_path:
