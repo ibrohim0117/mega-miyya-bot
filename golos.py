@@ -159,7 +159,7 @@ def register_voice_handlers(dp):
             
             sent_voice = await message.answer_voice(
                 voice=FSInputFile(file_path),
-                caption="🔊 Sizning matnningiz ovozli versiyasi"
+                caption=f"🔊 Sizning matnningiz ovozli versiyasi\n@mega_brainbot"
             )
             await processing_msg.delete()
             
